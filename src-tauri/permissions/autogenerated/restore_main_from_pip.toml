@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restore-main-from-pip"
+description = "Enables the restore_main_from_pip command without any pre-configured scope."
+commands.allow = ["restore_main_from_pip"]
+
+[[permission]]
+identifier = "deny-restore-main-from-pip"
+description = "Denies the restore_main_from_pip command without any pre-configured scope."
+commands.deny = ["restore_main_from_pip"]

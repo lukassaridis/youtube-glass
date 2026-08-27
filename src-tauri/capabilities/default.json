@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Chrome bar and YouTube hotkeys",
+  "windows": ["main", "chrome", "youtube", "video-pip"],
+  "remote": {
+    "urls": [
+      "https://*.youtube.com/*",
+      "https://youtube.com/*",
+      "https://youtu.be/*",
+      "https://*.youtu.be/*",
+      "https://*.youtube-nocookie.com/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "core:webview:allow-set-webview-zoom",
+    "opener:default",
+    "allow-open-video-pip",
+    "allow-hide-main-for-pip",
+    "allow-restore-main-from-pip",
+    "allow-reload-youtube",
+    "allow-set-header-visible"
+  ]
+}
