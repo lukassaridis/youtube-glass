@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO = "MrBeaTGamer/youtube-glass";
+const REPO = "lukassaridis/youtube-glass";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");

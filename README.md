@@ -4,7 +4,7 @@ A thin YouTube desktop app for Windows: real youtube.com in WebView2 with its ma
 
 ## Download
 
-Grab the latest **Windows installer** from [Releases](https://github.com/MrBeaTGamer/youtube-glass/releases):
+Grab the latest **Windows installer** from [Releases](https://github.com/lukassaridis/youtube-glass/releases):
 
 - `YouTube Glass_0.1.0_x64-setup.exe` — install for the current user (no admin)
 - `youtube-glass.exe` — portable executable
