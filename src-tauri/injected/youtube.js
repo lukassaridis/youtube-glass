@@ -12,6 +12,32 @@
   window.__ytgPipInit = true;
 
   const BUTTON_ID = "ytg-pip-fab";
+  const CONTROLS_ID = "ytg-window-controls";
+  const CONTROLS_STYLE_ID = "ytg-window-controls-style";
+  // Empty parts of YouTube's masthead act as the window's title bar.
+  const DRAG_ZONE = ["ytd-masthead", "#masthead-container", "#" + CONTROLS_ID].join(",");
+  const NO_DRAG = [
+    "a",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[contenteditable]",
+    "[role='button']",
+    "[role='link']",
+    "[role='combobox']",
+    "yt-icon-button",
+    "yt-button-shape",
+    "ytd-topbar-logo-renderer",
+    "yt-searchbox",
+    "ytd-searchbox",
+    "#search-form",
+    "#voice-search-button",
+    "ytd-topbar-menu-button-renderer",
+    "ytd-notification-topbar-button-renderer",
+    "#avatar-btn",
+    "tp-yt-iron-dropdown",
+  ].join(",");
 
   const nativeRequestPip = HTMLVideoElement.prototype.requestPictureInPicture;
 
@@ -89,7 +115,6 @@
   }
 
   function videoIsPresent() {
-    // Watch / Shorts / embed only — homepage hover autoplay is not a session.
     return Boolean(videoIdFromLocation());
   }
 
@@ -135,7 +160,6 @@
       toast("Picture in picture is unavailable");
       return;
     }
-    // Call in the same click turn so Chromium keeps the user-gesture token.
     Promise.resolve(request.call(video)).catch((err) => {
       console.error("ytg pip", err);
       toast("Picture in picture is unavailable");
@@ -224,11 +248,85 @@
     return button;
   }
 
-  function syncButton() {
+  function appWindow() {
+    const api = window.__TAURI__ && window.__TAURI__.window;
+    return api && api.getCurrentWindow ? api.getCurrentWindow() : null;
+  }
+
+  function controlIcon(d) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function ensureControls() {
+    if (!document.getElementById(CONTROLS_STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = CONTROLS_STYLE_ID;
+      style.textContent = `
+        #${CONTROLS_ID}{position:fixed;top:0;right:0;height:56px;display:none;align-items:center;gap:2px;padding:0 8px 0 4px;z-index:2030;}
+        #${CONTROLS_ID} button{all:unset;box-sizing:border-box;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;cursor:pointer;color:var(--yt-spec-text-primary,#f1f1f1);}
+        #${CONTROLS_ID} button:hover{background:var(--yt-spec-badge-chip-background,rgba(255,255,255,.1));}
+        #${CONTROLS_ID} button.ytg-close:hover{background:#e81123;color:#fff;}
+        #${CONTROLS_ID} svg{width:16px;height:16px;fill:currentColor;}
+        html.ytg-controls-visible ytd-masthead #end{margin-right:124px;}
+      `;
+      mount(style);
+    }
+    let bar = document.getElementById(CONTROLS_ID);
+    if (bar) {
+      return bar;
+    }
+    bar = document.createElement("div");
+    bar.id = CONTROLS_ID;
+    const buttons = [
+      ["Minimize", "", "M3 7.4h10v1.2H3V7.4Z", (win) => win.minimize()],
+      ["Maximize", "", "M3.5 3.5h9v9h-9v-9Zm1.2 1.2v6.6h6.6V4.7H4.7Z", (win) => win.toggleMaximize()],
+      [
+        "Close",
+        "ytg-close",
+        "m4.2 3.4 3.8 3.8 3.8-3.8 1 1-3.8 3.8 3.8 3.8-1 1-3.8-3.8-3.8 3.8-1-1 3.8-3.8-3.8-3.8 1-1Z",
+        (win) => win.close(),
+      ],
+    ];
+    for (const [label, className, d, action] of buttons) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      if (className) {
+        button.className = className;
+      }
+      button.appendChild(controlIcon(d));
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const win = appWindow();
+        if (win) {
+          action(win);
+        }
+      });
+      bar.appendChild(button);
+    }
+    mount(bar);
+    return bar;
+  }
+
+  function syncChrome() {
+    const fullscreen = Boolean(document.fullscreenElement);
     const button = ensureButton();
     mount(button);
-    const show = videoIsPresent();
-    button.style.display = show ? "flex" : "none";
+    button.style.display = videoIsPresent() && !fullscreen ? "flex" : "none";
+
+    const controls = ensureControls();
+    mount(controls);
+    const showControls = !fullscreen && Boolean(document.querySelector("ytd-masthead"));
+    controls.style.display = showControls ? "flex" : "none";
+    document.documentElement.classList.toggle("ytg-controls-visible", showControls);
   }
 
   function invokeCmd(name, args) {
@@ -237,6 +335,66 @@
       invoke(name, args);
     }
   }
+
+  function inDragZone(event) {
+    // composedPath so a click inside any shadow root is judged by its real target.
+    const path = event.composedPath().filter((node) => node instanceof Element);
+    if (path.some((el) => el.matches(NO_DRAG))) {
+      return false;
+    }
+    return path.some((el) => el.matches(DRAG_ZONE));
+  }
+
+  // Start the native move on the first real movement so plain clicks on the masthead
+  // (e.g. to dismiss search suggestions) still reach the page.
+  let dragStart = null;
+  window.addEventListener(
+    "mousedown",
+    (event) => {
+      dragStart = null;
+      if (event.button !== 0 || !inDragZone(event)) {
+        return;
+      }
+      if (event.detail === 2) {
+        event.preventDefault();
+        const win = appWindow();
+        if (win) {
+          win.toggleMaximize();
+        }
+        return;
+      }
+      dragStart = { x: event.screenX, y: event.screenY };
+    },
+    true
+  );
+  window.addEventListener(
+    "mousemove",
+    (event) => {
+      if (!dragStart) {
+        return;
+      }
+      if (!(event.buttons & 1)) {
+        dragStart = null;
+        return;
+      }
+      if (Math.abs(event.screenX - dragStart.x) + Math.abs(event.screenY - dragStart.y) < 4) {
+        return;
+      }
+      dragStart = null;
+      const win = appWindow();
+      if (win) {
+        win.startDragging();
+      }
+    },
+    { passive: true }
+  );
+  window.addEventListener(
+    "mouseup",
+    () => {
+      dragStart = null;
+    },
+    true
+  );
 
   window.addEventListener(
     "enterpictureinpicture",
@@ -253,25 +411,15 @@
     true
   );
 
-  let headerHint = false;
-  window.addEventListener(
-    "mousemove",
-    (event) => {
-      const want = event.clientY <= 10;
-      if (want === headerHint) {
-        return;
-      }
-      headerHint = want;
-      if (want) {
-        invokeCmd("set_header_visible", { visible: true });
-      }
-    },
-    { passive: true }
-  );
-
   window.addEventListener(
     "keydown",
     (event) => {
+      if (event.code === "F5" && !event.altKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        location.reload();
+        return;
+      }
       if (event.altKey && !event.ctrlKey && !event.shiftKey && event.code === "KeyP") {
         event.preventDefault();
         event.stopPropagation();
@@ -282,9 +430,10 @@
   );
 
   const start = () => {
-    syncButton();
-    setInterval(syncButton, 500);
-    document.addEventListener("yt-navigate-finish", syncButton, true);
+    syncChrome();
+    setInterval(syncChrome, 500);
+    document.addEventListener("yt-navigate-finish", syncChrome, true);
+    document.addEventListener("fullscreenchange", syncChrome, true);
   };
 
   if (document.readyState === "loading") {

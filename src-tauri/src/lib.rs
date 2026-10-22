@@ -1,22 +1,18 @@
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::window::WindowBuilder;
 use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
-    Size, State, Theme, Webview, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
+    Size, Theme, Webview, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 const YOUTUBE_HOME: &str = "https://www.youtube.com";
-const CHROME_HEIGHT: f64 = 36.0;
-const HOVER_STRIP: f64 = 6.0;
 const PIP_WIDTH: f64 = 480.0;
 const PIP_HEIGHT: f64 = 270.0;
 const YOUTUBE_BG: tauri::window::Color = tauri::window::Color(15, 15, 15, 255);
-const TRANSPARENT: tauri::window::Color = tauri::window::Color(0, 0, 0, 0);
 
 const YOUTUBE_SCRIPT: &str = include_str!("../injected/youtube.js");
 const PIP_LABEL: &str = "video-pip";
@@ -37,6 +33,9 @@ const PIP_CHROME: &str = r#"
 })();
 "#;
 
+#[cfg(windows)]
+mod taskbar;
+
 struct PipRestore {
     position: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
@@ -45,20 +44,18 @@ struct PipRestore {
 
 struct AppState {
     last_youtube_url: Mutex<String>,
-    recover_times: Mutex<Vec<Instant>>,
-    header_visible: Mutex<bool>,
     pip_hidden: Mutex<bool>,
     pip_restore: Mutex<Option<PipRestore>>,
+    signing_in: Mutex<bool>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             last_youtube_url: Mutex::new(YOUTUBE_HOME.to_string()),
-            recover_times: Mutex::new(Vec::new()),
-            header_visible: Mutex::new(false),
             pip_hidden: Mutex::new(false),
             pip_restore: Mutex::new(None),
+            signing_in: Mutex::new(false),
         }
     }
 }
@@ -82,6 +79,52 @@ fn host_allowed(host: &str) -> bool {
     SUFFIXES
         .iter()
         .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+        || google_country_host(&host)
+}
+
+/// google.co.uk, google.de, google.com.au, ... (sign-in sets cookies on the local domain).
+fn google_country_host(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.iter().rposition(|label| *label == "google").is_some_and(|at| {
+        match &labels[at + 1..] {
+            [cc] => cc.len() == 2,
+            [second, cc] => matches!(*second, "co" | "com") && cc.len() == 2,
+            _ => false,
+        }
+    })
+}
+
+fn is_sign_in_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "accounts.youtube.com"
+        || host
+            .strip_prefix("accounts.")
+            .is_some_and(|rest| rest == "google.com" || google_country_host(rest))
+}
+
+fn is_youtube_page(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    matches!(host.as_str(), "youtube.com" | "www.youtube.com" | "m.youtube.com")
+}
+
+/// Google sign-in can hop through hosts we don't otherwise allow (a work or school
+/// account's own identity provider, for one). Once a sign-in starts, follow any https
+/// page in-app until it lands back on YouTube, so the session ends up in this webview
+/// rather than in the user's browser.
+fn navigation_allowed(app: &AppHandle, url: &Url) -> bool {
+    let state = app.state::<AppState>();
+    let Ok(mut signing_in) = state.signing_in.lock() else {
+        return url_allowed(url);
+    };
+    if is_sign_in_url(url) {
+        *signing_in = true;
+    } else if is_youtube_page(url) {
+        *signing_in = false;
+    }
+    url_allowed(url) || (*signing_in && url.scheme() == "https")
 }
 
 fn url_allowed(url: &Url) -> bool {
@@ -92,48 +135,15 @@ fn url_allowed(url: &Url) -> bool {
     }
 }
 
-fn header_height(visible: bool) -> f64 {
-    if visible {
-        CHROME_HEIGHT
-    } else {
-        HOVER_STRIP
-    }
-}
-
-fn layout_webviews(
-    chrome: &Webview,
-    youtube: &Webview,
-    size: PhysicalSize<u32>,
-    scale: f64,
-    header_visible: bool,
-) -> tauri::Result<()> {
-    youtube.set_position(Position::Physical(PhysicalPosition::new(0, 0)))?;
-    youtube.set_size(Size::Physical(PhysicalSize::new(size.width, size.height)))?;
-    let chrome_h = (header_height(header_visible) * scale).round().max(1.0) as u32;
-    chrome.set_position(Position::Physical(PhysicalPosition::new(0, 0)))?;
-    chrome.set_size(Size::Physical(PhysicalSize::new(size.width, chrome_h)))?;
-    Ok(())
-}
-
-fn header_is_visible(window: &Window) -> bool {
-    window
-        .try_state::<AppState>()
-        .and_then(|state| state.header_visible.lock().ok().map(|flag| *flag))
-        .unwrap_or(false)
-}
-
 fn relayout(window: &Window) {
     let Ok(size) = window.inner_size() else {
-        return;
-    };
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let Some(chrome) = window.get_webview("chrome") else {
         return;
     };
     let Some(youtube) = window.get_webview("youtube") else {
         return;
     };
-    let _ = layout_webviews(&chrome, &youtube, size, scale, header_is_visible(window));
+    let _ = youtube.set_position(Position::Physical(PhysicalPosition::new(0, 0)));
+    let _ = youtube.set_size(Size::Physical(size));
 }
 
 fn remember_youtube_url(app: &AppHandle, url: &Url) {
@@ -145,33 +155,8 @@ fn remember_youtube_url(app: &AppHandle, url: &Url) {
     }
 }
 
-fn recover_allowed(state: &AppState) -> bool {
-    let Ok(mut times) = state.recover_times.lock() else {
-        return false;
-    };
-    let now = Instant::now();
-    times.retain(|time| now.duration_since(*time) < Duration::from_secs(10));
-    if times.len() >= 3 {
-        return false;
-    }
-    times.push(now);
-    true
-}
-
 fn open_external(app: &AppHandle, url: &Url) {
     let _ = app.opener().open_url(url.as_str(), None::<&str>);
-}
-
-fn attach_chrome(window: &Window, size: PhysicalSize<u32>, scale: f64) -> tauri::Result<Webview> {
-    window.add_child(
-        WebviewBuilder::new("chrome", WebviewUrl::App("index.html".into()))
-            .focused(false)
-            .transparent(true)
-            .background_color(TRANSPARENT),
-        LogicalPosition::new(0.0, 0.0),
-        LogicalSize::new(size.width as f64 / scale, HOVER_STRIP),
-    )?;
-    window.get_webview("chrome").ok_or(tauri::Error::WebviewNotFound)
 }
 
 fn attach_youtube(window: &Window, app: &AppHandle) -> tauri::Result<Webview> {
@@ -200,7 +185,7 @@ fn attach_youtube(window: &Window, app: &AppHandle) -> tauri::Result<Webview> {
             .on_navigation({
                 let handle = opener_handle.clone();
                 move |url| {
-                    if url_allowed(&url) {
+                    if navigation_allowed(&handle, &url) {
                         true
                     } else {
                         open_external(&handle, &url);
@@ -209,7 +194,7 @@ fn attach_youtube(window: &Window, app: &AppHandle) -> tauri::Result<Webview> {
                 }
             })
             .on_new_window(move |url, _features| {
-                if url_allowed(&url) {
+                if navigation_allowed(&handle, &url) {
                     if let Some(youtube) = handle.get_webview("youtube") {
                         let _ = youtube.navigate(url);
                     }
@@ -241,17 +226,6 @@ fn attach_youtube(window: &Window, app: &AppHandle) -> tauri::Result<Webview> {
     window
         .get_webview("youtube")
         .ok_or(tauri::Error::WebviewNotFound)
-}
-
-fn navigate_youtube(app: &AppHandle, url: Url) -> Result<(), String> {
-    if let Some(youtube) = app.get_webview("youtube") {
-        youtube.navigate(url).map_err(|err| err.to_string())
-    } else {
-        let window = app.get_window("main").ok_or("main window missing")?;
-        attach_youtube(&window, app).map_err(|err| err.to_string())?;
-        relayout(&window);
-        Ok(())
-    }
 }
 
 fn valid_video_id(video_id: &str) -> bool {
@@ -315,7 +289,10 @@ fn restore_main_from_pip_inner(app: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn hide_main_for_pip(app: AppHandle) -> Result<(), String> {
-    hide_main_for_pip_inner(&app)
+    hide_main_for_pip_inner(&app)?;
+    #[cfg(windows)]
+    taskbar::adopt_native_pip(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -389,36 +366,6 @@ async fn open_video_pip(app: AppHandle, video_id: String, start: f64) -> Result<
     Ok(())
 }
 
-#[tauri::command]
-async fn reload_youtube(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    if !recover_allowed(&state) {
-        return Err("reload rate limited".into());
-    }
-    let url = state
-        .last_youtube_url
-        .lock()
-        .map_err(|err| err.to_string())?
-        .parse()
-        .unwrap_or_else(|_| YOUTUBE_HOME.parse().expect("home url"));
-    navigate_youtube(&app, url)
-}
-
-#[tauri::command]
-async fn set_header_visible(app: AppHandle, visible: bool) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    {
-        let mut flag = state.header_visible.lock().map_err(|err| err.to_string())?;
-        if *flag == visible {
-            return Ok(());
-        }
-        *flag = visible;
-    }
-    if let Some(window) = app.get_window("main") {
-        relayout(&window);
-    }
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -427,11 +374,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_video_pip,
             hide_main_for_pip,
-            restore_main_from_pip,
-            reload_youtube,
-            set_header_visible
+            restore_main_from_pip
         ])
         .setup(|app| {
+            #[cfg(windows)]
+            taskbar::set_app_id(&app.config().identifier);
+
             let window = WindowBuilder::new(app, "main")
                 .title("YouTube Glass")
                 .inner_size(1280.0, 800.0)
@@ -444,10 +392,7 @@ pub fn run() {
                 .background_color(YOUTUBE_BG)
                 .build()?;
 
-            let size = window.inner_size()?;
-            let scale = window.scale_factor()?;
             attach_youtube(&window, app.handle())?;
-            attach_chrome(&window, size, scale)?;
             relayout(&window);
 
             let layout_window = window.clone();
@@ -467,4 +412,35 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running YouTube Glass");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(s: &str) -> Url {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn google_country_domains_are_allowed() {
+        assert!(host_allowed("accounts.google.co.uk"));
+        assert!(host_allowed("www.google.de"));
+        assert!(host_allowed("www.google.com.au"));
+        assert!(!host_allowed("google.evil.example"));
+        assert!(!host_allowed("notgoogle.co.uk"));
+        assert!(!host_allowed("google.attacker.com.example"));
+        assert!(!host_allowed("google.foo.io"));
+    }
+
+    #[test]
+    fn sign_in_urls() {
+        assert!(is_sign_in_url(&url("https://accounts.google.com/ServiceLogin")));
+        assert!(is_sign_in_url(&url("https://accounts.google.co.uk/accounts/SetSID")));
+        assert!(is_sign_in_url(&url("https://accounts.youtube.com/accounts/SetSID")));
+        assert!(!is_sign_in_url(&url("https://www.youtube.com/")));
+        assert!(!is_sign_in_url(&url("https://accounts.example.com/")));
+        assert!(is_youtube_page(&url("https://www.youtube.com/watch?v=x")));
+        assert!(!is_youtube_page(&url("https://accounts.youtube.com/")));
+    }
 }

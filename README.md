@@ -1,6 +1,6 @@
 # YouTube Glass
 
-A thin YouTube desktop app for Windows: real youtube.com in WebView2, a hover title bar, and Chromium picture-in-picture.
+A thin YouTube desktop app for Windows: real youtube.com in WebView2 with its masthead as the title bar, and Chromium picture-in-picture.
 
 ## Download
 

@@ -4,8 +4,6 @@ fn main() {
             "open_video_pip",
             "hide_main_for_pip",
             "restore_main_from_pip",
-            "reload_youtube",
-            "set_header_visible",
         ])),
     )
     .expect("failed to run tauri-build");
