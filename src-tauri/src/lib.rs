@@ -35,6 +35,7 @@ const PIP_CHROME: &str = r#"
 
 #[cfg(windows)]
 mod taskbar;
+mod update;
 
 struct PipRestore {
     position: PhysicalPosition<i32>,
@@ -370,11 +371,16 @@ async fn open_video_pip(app: AppHandle, video_id: String, start: f64) -> Result<
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
+        .manage(update::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
             open_video_pip,
             hide_main_for_pip,
-            restore_main_from_pip
+            restore_main_from_pip,
+            update::check_for_update,
+            update::dismiss_update,
+            update::install_update
         ])
         .setup(|app| {
             #[cfg(windows)]

@@ -14,6 +14,7 @@
   const BUTTON_ID = "ytg-pip-fab";
   const CONTROLS_ID = "ytg-window-controls";
   const CONTROLS_STYLE_ID = "ytg-window-controls-style";
+  const UPDATE_ID = "ytg-update";
   // Empty parts of YouTube's masthead act as the window's title bar.
   const DRAG_ZONE = ["ytd-masthead", "#masthead-container", "#" + CONTROLS_ID].join(",");
   const NO_DRAG = [
@@ -316,8 +317,143 @@
     return bar;
   }
 
+  function updateStyle() {
+    return `
+      #${UPDATE_ID}{position:fixed;left:16px;bottom:16px;z-index:2147483647;box-sizing:border-box;width:320px;padding:14px 16px;border-radius:12px;
+        background:rgba(33,33,33,.92);color:#f1f1f1;border:1px solid rgba(255,255,255,.12);box-shadow:0 8px 28px rgba(0,0,0,.45);
+        backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);font:13px/1.4 Roboto,"Segoe UI",sans-serif;}
+      #${UPDATE_ID} .ytg-title{font-size:15px;font-weight:500;margin:0 0 4px;}
+      #${UPDATE_ID} .ytg-text{color:#aaa;margin:0;}
+      #${UPDATE_ID} .ytg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;}
+      #${UPDATE_ID} button{all:unset;box-sizing:border-box;height:36px;padding:0 16px;border-radius:18px;cursor:pointer;font-weight:500;}
+      #${UPDATE_ID} .ytg-secondary{color:#f1f1f1;}
+      #${UPDATE_ID} .ytg-secondary:hover{background:rgba(255,255,255,.1);}
+      #${UPDATE_ID} .ytg-primary{background:#f1f1f1;color:#0f0f0f;}
+      #${UPDATE_ID} .ytg-primary:hover{background:#d9d9d9;}
+      #${UPDATE_ID} .ytg-track{height:4px;margin-top:12px;border-radius:2px;background:rgba(255,255,255,.2);overflow:hidden;}
+      #${UPDATE_ID} .ytg-bar{height:100%;width:0;background:#f00;transition:width .15s linear;}
+      #${UPDATE_ID} .ytg-bar.ytg-busy{width:30%;animation:ytg-busy 1.1s ease-in-out infinite alternate;}
+      @keyframes ytg-busy{from{margin-left:0}to{margin-left:70%}}
+    `;
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    if (text) {
+      node.textContent = text;
+    }
+    return node;
+  }
+
+  function showUpdate(info) {
+    const core = window.__TAURI__ && window.__TAURI__.core;
+    if (!core || document.getElementById(UPDATE_ID)) {
+      return;
+    }
+    const style = el("style");
+    style.textContent = updateStyle();
+    mount(style);
+
+    const card = el("div");
+    card.id = UPDATE_ID;
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Update available");
+    const title = el("p", "ytg-title");
+    const text = el("p", "ytg-text");
+    const actions = el("div", "ytg-actions");
+    card.append(title, text, actions);
+    mount(card);
+
+    const close = () => {
+      card.remove();
+      style.remove();
+    };
+    const button = (label, kind, onClick) => {
+      const node = el("button", kind, label);
+      node.type = "button";
+      node.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+      return node;
+    };
+
+    const offer = () => {
+      title.textContent = "Update available";
+      text.textContent = `YouTube Glass ${info.version} is ready to install. You're on ${info.currentVersion}.`;
+      actions.replaceChildren(
+        button("Later", "ytg-secondary", () => {
+          core.invoke("dismiss_update").catch(() => {});
+          close();
+        }),
+        button("Update", "ytg-primary", install)
+      );
+    };
+
+    const install = () => {
+      title.textContent = `Updating to ${info.version}`;
+      text.textContent = "Downloading…";
+      const track = el("div", "ytg-track");
+      const bar = el("div", "ytg-bar");
+      track.appendChild(bar);
+      actions.replaceChildren();
+      card.replaceChildren(title, text, track);
+
+      const channel = new core.Channel();
+      channel.onmessage = (message) => {
+        if (message.event === "progress") {
+          if (message.total) {
+            const percent = Math.min(100, Math.round((message.downloaded / message.total) * 100));
+            bar.classList.remove("ytg-busy");
+            bar.style.width = `${percent}%`;
+            text.textContent = `Downloading… ${percent}%`;
+          } else {
+            bar.classList.add("ytg-busy");
+            text.textContent = `Downloading… ${(message.downloaded / 1048576).toFixed(1)} MB`;
+          }
+        } else if (message.event === "installing") {
+          bar.classList.remove("ytg-busy");
+          bar.style.width = "100%";
+          text.textContent = "Installing… YouTube Glass will restart.";
+        }
+      };
+      core.invoke("install_update", { onProgress: channel }).catch((err) => {
+        console.error("ytg update", err);
+        title.textContent = "Update failed";
+        text.textContent = "Check your connection and try again.";
+        card.replaceChildren(title, text, actions);
+        actions.replaceChildren(button("Close", "ytg-secondary", close), button("Retry", "ytg-primary", install));
+      });
+    };
+
+    offer();
+  }
+
+  function checkForUpdate() {
+    const core = window.__TAURI__ && window.__TAURI__.core;
+    if (!core) {
+      return;
+    }
+    core
+      .invoke("check_for_update")
+      .then((info) => {
+        if (info) {
+          showUpdate(info);
+        }
+      })
+      .catch(() => {});
+  }
+
   function syncChrome() {
     const fullscreen = Boolean(document.fullscreenElement);
+    const update = document.getElementById(UPDATE_ID);
+    if (update) {
+      update.style.display = fullscreen ? "none" : "block";
+    }
     const button = ensureButton();
     mount(button);
     button.style.display = videoIsPresent() && !fullscreen ? "flex" : "none";
@@ -434,6 +570,7 @@
     setInterval(syncChrome, 500);
     document.addEventListener("yt-navigate-finish", syncChrome, true);
     document.addEventListener("fullscreenchange", syncChrome, true);
+    checkForUpdate();
   };
 
   if (document.readyState === "loading") {

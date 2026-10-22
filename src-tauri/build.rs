@@ -4,6 +4,9 @@ fn main() {
             "open_video_pip",
             "hide_main_for_pip",
             "restore_main_from_pip",
+            "check_for_update",
+            "dismiss_update",
+            "install_update",
         ])),
     )
     .expect("failed to run tauri-build");

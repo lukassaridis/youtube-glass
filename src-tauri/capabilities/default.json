@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "YouTube page: window dragging, controls and PiP",
+  "description": "YouTube page: window dragging, controls, PiP and updates",
   "windows": ["main", "youtube", "video-pip"],
   "remote": {
     "urls": [
@@ -23,6 +23,9 @@
     "opener:default",
     "allow-open-video-pip",
     "allow-hide-main-for-pip",
-    "allow-restore-main-from-pip"
+    "allow-restore-main-from-pip",
+    "allow-check-for-update",
+    "allow-dismiss-update",
+    "allow-install-update"
   ]
 }

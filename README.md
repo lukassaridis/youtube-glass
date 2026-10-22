@@ -21,3 +21,16 @@ npm run tauri dev
 ```bash
 npm run tauri build
 ```
+
+## Release
+
+The app checks GitHub Releases on launch and offers updates in-app. Updates are signed with the key in `~/.tauri/youtube-glass.key` (keep it safe; losing it means installed copies can no longer update).
+
+1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
+2. Build, sign and publish:
+
+```bash
+npm run release -- --notes "What changed" --publish
+```
+
+Without `--publish` the files (`YouTube.Glass_<version>_x64-setup.exe`, `youtube-glass.exe`, `latest.json`) are left in `src-tauri/target/release/bundle/release` to upload by hand. Every release must include `latest.json`.
